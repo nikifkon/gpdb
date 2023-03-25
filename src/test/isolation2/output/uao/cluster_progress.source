@@ -38,7 +38,7 @@ SELECT gp_wait_until_triggered_fault('cluster_ao_seq_scan_begin', 1, dbid) FROM 
  Success:                      
 (1 row)
 -- We are in "seq scanning ao" phase and "heap_blks_total" should be available
-1U: select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned, index_rebuild_count from pg_stat_progress_cluster;
+select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned, index_rebuild_count from gp_stat_progress_cluster where gp_segment_id = 1;
  datname        | relid               | command | phase                         | cluster_index_relid | heap_tuples_scanned | heap_tuples_written | heap_blks_total_all | heap_blks_scanned | index_rebuild_count 
 ----------------+---------------------+---------+-------------------------------+---------------------+---------------------+---------------------+---------------------+-------------------+---------------------
  isolation2test | cluster_progress_ao | CLUSTER | seq scanning append-optimized | -                   | 0                   | 0                   | t                   | 0                 | 0                   
@@ -63,7 +63,7 @@ SELECT gp_wait_until_triggered_fault('cluster_ao_scanning_tuples', 200, dbid) FR
 -- We are in "seq scanning ao" phase. "heap_tuples_scanned" should be updated
 -- every time we scan an old live tuple. "heap_blks_scanned" should be updated
 -- every time we finish scanning a heap-block size worth of old tuples.
-1U: select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned / (SELECT n_segfiles_per_tuple FROM helper_table) AS heap_blks_scanned_per_col, index_rebuild_count from pg_stat_progress_cluster;
+select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned / (SELECT n_segfiles_per_tuple FROM helper_table) AS heap_blks_scanned_per_col, index_rebuild_count from gp_stat_progress_cluster where gp_segment_id = 1;
  datname        | relid               | command | phase                         | cluster_index_relid | heap_tuples_scanned | heap_tuples_written | heap_blks_total_all | heap_blks_scanned_per_col | index_rebuild_count 
 ----------------+---------------------+---------+-------------------------------+---------------------+---------------------+---------------------+---------------------+---------------------------+---------------------
  isolation2test | cluster_progress_ao | CLUSTER | seq scanning append-optimized | -                   | 200                 | 0                   | t                   | 1                         | 0                   
@@ -86,7 +86,7 @@ SELECT gp_wait_until_triggered_fault('cluster_ao_sorting_tuples', 1, dbid) FROM 
  Success:                      
 (1 row)
 -- We are in "sorting tuples" phase.
-1U: select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_scanned_all, index_rebuild_count from pg_stat_progress_cluster;
+select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_scanned_all, index_rebuild_count from gp_stat_progress_cluster where gp_segment_id = 1;
  datname        | relid               | command | phase          | cluster_index_relid | heap_tuples_scanned | heap_tuples_written | heap_blks_total_all | heap_blks_scanned_all | index_rebuild_count 
 ----------------+---------------------+---------+----------------+---------------------+---------------------+---------------------+---------------------+-----------------------+---------------------
  isolation2test | cluster_progress_ao | CLUSTER | sorting tuples | -                   | 80000               | 0                   | t                   | t                     | 0                   
@@ -109,7 +109,7 @@ SELECT gp_wait_until_triggered_fault('cluster_ao_write_begin', 1, dbid) FROM gp_
  Success:                      
 (1 row)
 -- We are in "writing new ao" phase.
-1U: select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_scanned_all, index_rebuild_count from pg_stat_progress_cluster;
+select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_scanned_all, index_rebuild_count from gp_stat_progress_cluster where gp_segment_id = 1;
  datname        | relid               | command | phase                        | cluster_index_relid | heap_tuples_scanned | heap_tuples_written | heap_blks_total_all | heap_blks_scanned_all | index_rebuild_count 
 ----------------+---------------------+---------+------------------------------+---------------------+---------------------+---------------------+---------------------+-----------------------+---------------------
  isolation2test | cluster_progress_ao | CLUSTER | writing new append-optimized | -                   | 80000               | 0                   | t                   | t                     | 0                   
@@ -132,7 +132,7 @@ SELECT gp_wait_until_triggered_fault('cluster_ao_writing_tuples', 200, dbid) FRO
  Success:                      
 (1 row)
 -- We are in "writing new ao" phase. "heap_tuples_written" should be updated
-1U: select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_scanned_all, index_rebuild_count from pg_stat_progress_cluster;
+select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_total_all, heap_blks_scanned = (SELECT heap_blks_total_before FROM helper_table) AS heap_blks_scanned_all, index_rebuild_count from gp_stat_progress_cluster where gp_segment_id = 1;
  datname        | relid               | command | phase                        | cluster_index_relid | heap_tuples_scanned | heap_tuples_written | heap_blks_total_all | heap_blks_scanned_all | index_rebuild_count 
 ----------------+---------------------+---------+------------------------------+---------------------+---------------------+---------------------+---------------------+-----------------------+---------------------
  isolation2test | cluster_progress_ao | CLUSTER | writing new append-optimized | -                   | 80000               | 200                 | t                   | t                     | 0                   
@@ -147,7 +147,7 @@ SELECT gp_inject_fault('cluster_ao_writing_tuples', 'reset', dbid) FROM gp_segme
 CLUSTER
 
 -- cluster has finished, nothing should show up in the view.
-1U: select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total, heap_blks_scanned, index_rebuild_count from pg_stat_progress_cluster;
+select datname, relid::regclass, command, phase, cluster_index_relid::regclass, heap_tuples_scanned, heap_tuples_written, heap_blks_total, heap_blks_scanned, index_rebuild_count from gp_stat_progress_cluster where gp_segment_id = 1;
  datname | relid | command | phase | cluster_index_relid | heap_tuples_scanned | heap_tuples_written | heap_blks_total | heap_blks_scanned | index_rebuild_count 
 ---------+-------+---------+-------+---------------------+---------------------+---------------------+-----------------+-------------------+---------------------
 (0 rows)

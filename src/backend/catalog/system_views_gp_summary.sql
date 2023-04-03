@@ -61,3 +61,21 @@ FROM
     gp_distribution_policy d ON c.oid = d.localoid
 GROUP BY
     a.datid, a.relid, a.phase, c.relname, d.policytype;
+
+CREATE OR REPLACE VIEW gp_stat_progress_analyze_summary AS
+SELECT
+    a.datid,
+    a.relid,
+    a.phase,
+    c.relname,
+    d.policytype,
+    case when d.policytype = 'r' then (sum(a.sample_blks_total)/d.numsegments)::bigint else sum(a.sample_blks_total) end sample_blks_total,
+    case when d.policytype = 'r' then (sum(a.sample_blks_scanned)/d.numsegments)::bigint else sum(a.sample_blks_scanned) end sample_blks_scanned,
+    case when d.policytype = 'r' then (sum(a.ext_stats_total)/d.numsegments)::bigint else sum(a.ext_stats_total) end ext_stats_total,
+    case when d.policytype = 'r' then (sum(a.ext_stats_computed)/d.numsegments)::bigint else sum(a.ext_stats_computed) end ext_stats_computed,
+    case when d.policytype = 'r' then (sum(a.child_tables_total)/d.numsegments)::bigint else sum(a.child_tables_total) end child_tables_total,
+    case when d.policytype = 'r' then (sum(a.child_tables_done)/d.numsegments)::bigint else sum(a.child_tables_done) end child_tables_done
+FROM gp_stat_progress_analyze a
+    JOIN pg_class c ON a.relid = c.oid
+    JOIN gp_distribution_policy d ON c.oid = d.localoid
+GROUP BY a.datid, a.relid, a.phase, c.relname, d.policytype, d.numsegments;

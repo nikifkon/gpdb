@@ -79,3 +79,22 @@ FROM gp_stat_progress_analyze a
     JOIN pg_class c ON a.relid = c.oid
     JOIN gp_distribution_policy d ON c.oid = d.localoid
 GROUP BY a.datid, a.relid, a.phase, c.relname, d.policytype, d.numsegments;
+
+CREATE OR REPLACE VIEW gp_stat_progress_cluster_summary AS
+SELECT
+    a.datid,
+    a.datname,
+    a.relid,
+    a.command,
+    a.phase,
+    a.cluster_index_relid,
+    d.policytype,
+    case when d.policytype = 'r' then (sum(a.heap_tuples_scanned)/d.numsegments)::bigint else sum(a.heap_tuples_scanned) end heap_tuples_scanned,
+    case when d.policytype = 'r' then (sum(a.heap_tuples_written)/d.numsegments)::bigint else sum(a.heap_tuples_written) end heap_tuples_written,
+    case when d.policytype = 'r' then (sum(a.heap_blks_total)/d.numsegments)::bigint else sum(a.heap_blks_total) end heap_blks_total,
+    case when d.policytype = 'r' then (sum(a.heap_blks_scanned)/d.numsegments)::bigint else sum(a.heap_blks_scanned) end heap_blks_scanned,
+    case when d.policytype = 'r' then (sum(a.index_rebuild_count)/d.numsegments)::bigint else sum(a.index_rebuild_count) end index_rebuild_count
+FROM gp_stat_progress_cluster a
+         JOIN pg_class c ON a.relid = c.oid
+         JOIN gp_distribution_policy d ON c.oid = d.localoid
+GROUP BY a.datid, a.datname, a.relid, a.command, a.phase, a.cluster_index_relid, d.policytype, d.numsegments;

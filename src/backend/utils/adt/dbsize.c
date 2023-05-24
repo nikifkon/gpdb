@@ -21,9 +21,11 @@
 #include "catalog/pg_authid.h"
 #include "catalog/pg_tablespace.h"
 #include "commands/dbcommands.h"
+#include "common/hashfn.h"
 #include "commands/tablespace.h"
 #include "common/relpath.h"
 #include "executor/spi.h"
+#include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "utils/acl.h"
@@ -38,8 +40,11 @@
 #include "utils/relmapper.h"
 #include "utils/syscache.h"
 
+#include "access/genam.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/pg_appendonly.h"
+#include "catalog/pg_namespace_d.h"
 #include "libpq-fe.h"
 #include "foreign/fdwapi.h"
 #include "cdb/cdbdisp_query.h"
@@ -62,6 +67,12 @@ static int64 calculate_total_relation_size(Relation rel);
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),	\
 						errmsg("This query is not currently supported by GPDB.")))
 
+static void build_filenode2oid_hash(GpScanData *gpScanData);
+static void RelfilenodeMapInvalidate(GpScanData *gpScanData);
+static Oid get_idx_parent_oid(Oid indexrelid);
+static void getAllUserTableSpace(GpScanData *gpScanData);
+#define GP_FILENODE_SCAN_NATTR 2
+#define GP_FILENODE_STAT_NATTR 7
 /*
  * Helper function to dispatch a size-returning command.
  *
@@ -393,7 +404,7 @@ pg_tablespace_size_name(PG_FUNCTION_ARGS)
  * Iterator over all files belong to the relation and do stat.
  * The obviously better way is to use glob.  For whatever reason,
  * glob is extremely slow if there are lots of relations in the
- * database.  So we handle all cases, instead. 
+ * database.  So we handle all cases, instead.
  *
  * Note: we can safely apply this to temp tables of other sessions, so there
  * is no check here or at the call sites for that.
@@ -685,6 +696,591 @@ pg_table_size(PG_FUNCTION_ARGS)
 	relation_close(rel, AccessShareLock);
 
 	PG_RETURN_INT64(size);
+}
+
+
+static void
+getAllUserTableSpace(GpScanData *gpScanData)
+{
+	HASH_SEQ_STATUS status;
+	TablespaceMapEntry *entry;
+
+	hash_seq_init(&status, gpScanData->TablespaceMapHash);
+	while ((entry = (TablespaceMapEntry *) hash_seq_search(&status)) != NULL)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (gpScanData->numTablespaces == MAX_GP_TABLESPACE)
+			elog(ERROR, "table space num exceeds maximum %d", MAX_GP_TABLESPACE);
+		gpScanData->tableSpaces[gpScanData->numTablespaces++] = entry->path;
+		if (hash_search(gpScanData->TablespaceMapHash,
+						(void *) &entry->reltablespace,
+						HASH_REMOVE,
+						NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
+	}
+}
+
+static Oid
+get_idx_parent_oid(Oid indexrelid)
+{
+	HeapTuple	tuple;
+	Oid			result = 0;
+
+	tuple = SearchSysCache(INDEXRELID,
+						   ObjectIdGetDatum(indexrelid),
+						   0, 0, 0);
+	if (HeapTupleIsValid(tuple))
+	{
+		Form_pg_index pgIndexStruct;
+
+		pgIndexStruct = (Form_pg_index) GETSTRUCT(tuple);
+		result = pgIndexStruct->indrelid;
+		ReleaseSysCache(tuple);
+	}
+
+	return result;
+}
+
+static void
+RelfilenodeMapInvalidate(GpScanData *gpScanData)
+{
+	HASH_SEQ_STATUS status;
+	RelfilenodeScanMapEntry *entry;
+
+	hash_seq_init(&status, gpScanData->RelfilenodeMapHash);
+	while ((entry = (RelfilenodeScanMapEntry *) hash_seq_search(&status)) != NULL)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (hash_search(gpScanData->RelfilenodeMapHash,
+						(void *) &entry->relfilenode,
+						HASH_REMOVE,
+						NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
+	}
+}
+
+static void
+build_filenode2oid_hash(GpScanData *gpScanData)
+{
+	Relation	relation;
+	HeapTuple	tuple;
+	SysScanDesc scandesc;
+	RelfilenodeScanMapEntry *entry;
+	bool		found;
+	bool		filter = false;
+	char		buf[MAXPGPATH];
+	Oid			real_oid = 0;
+	Oid			relfilenodeKey;
+	HTAB		*filterOidHash = NULL;
+	HASHCTL		filterOidHashCtl;
+
+	relation = heap_open(RelationRelationId, AccessShareLock);
+	scandesc = systable_beginscan(relation,
+								  InvalidOid,
+								  false,
+								  NULL,
+								  0,
+								  NULL);
+	if (gpScanData->roleid != InvalidOid)
+		filter = true;
+	if (gpScanData->nspoid != InvalidOid)
+		filter = true;
+	if (filter)
+	{
+		if (CacheMemoryContext == NULL)
+			CreateCacheMemoryContext();
+		MemSet(&filterOidHashCtl, 0, sizeof(HASHCTL));
+		filterOidHashCtl.keysize = sizeof(Oid);
+		filterOidHashCtl.entrysize = sizeof(Oid);
+		filterOidHashCtl.hash = oid_hash;
+		filterOidHashCtl.hcxt = CacheMemoryContext;
+		filterOidHash = hash_create("FilterOID cache", 64, &filterOidHashCtl,
+									HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
+	}
+
+	while ((tuple = systable_getnext(scandesc)) != NULL)
+	{
+		CHECK_FOR_INTERRUPTS();
+		Form_pg_class pgClassStruct;
+		Oid			objid = ((Form_pg_type) GETSTRUCT(tuple))->oid;
+
+		/* actual pg_class.oid */
+		pgClassStruct = (Form_pg_class) GETSTRUCT(tuple);
+
+		/* filter by owner */
+		if (gpScanData->roleid != InvalidOid)
+			if (pgClassStruct->relowner != gpScanData->roleid)
+				continue;
+
+		/* filter by namespace */
+		if (gpScanData->nspoid != InvalidOid)
+		{
+			if (pgClassStruct->relnamespace != gpScanData->nspoid
+				&& !IsToastClass(pgClassStruct)
+				&& pgClassStruct->relnamespace != PG_AOSEGMENT_NAMESPACE)
+				continue;
+		}
+
+		relfilenodeKey = pgClassStruct->relfilenode;
+
+		/*
+		 * In GPDB6, some catalog table's relfilenode is zero, these oid and
+		 * filenode maps were stored in pg_filenode.map. We get these filenode
+		 * id by Relation type as workaround
+		 */
+		if (relfilenodeKey == 0)
+		{
+			Relation	rel = RelationIdGetRelation(objid);
+
+			if (rel != NULL)
+			{
+				relfilenodeKey = rel->rd_node.relNode;
+				RelationClose(rel);
+			}
+		}
+		entry = hash_search(gpScanData->RelfilenodeMapHash, (void *) &relfilenodeKey, HASH_ENTER, &found);
+
+		/* Search parent relation oid of this pg_class tuple */
+		/* toast */
+		if (pgClassStruct->relnamespace == PG_TOAST_NAMESPACE)
+		{
+			if (pgClassStruct->relkind == RELKIND_TOASTVALUE)
+			{
+				sscanf(pgClassStruct->relname.data, "pg_toast_%u", &real_oid);
+			}
+			else if (pgClassStruct->relkind == RELKIND_INDEX)
+			{
+				sscanf(pgClassStruct->relname.data, "pg_toast_%u_index", &real_oid);
+			}
+		}
+		/* ao */
+		else if (pgClassStruct->relnamespace == PG_AOSEGMENT_NAMESPACE)
+		{
+			/*
+			 * pg_aoseg_{oid}, pg_aovisimap_{oid}, pg_aovisimap_{oid}_index,
+			 * pg_aocsseg_{oid}, pg_aoblkdir_{oid}, pg_aoblkdir_{oid}_index
+			 */
+			sscanf(pgClassStruct->relname.data, "%[^1234567890]%u", buf, &real_oid);
+		}
+		/* ordinary index */
+		else if (pgClassStruct->relkind == RELKIND_INDEX)
+		{
+			real_oid = get_idx_parent_oid(objid);
+		}
+		else
+		{
+			real_oid = objid;
+			if (filter && filterOidHash != NULL)
+				hash_search(filterOidHash, (void *) &real_oid, HASH_ENTER, &found);
+		}
+
+		entry->relid = real_oid;
+
+		/*
+		 * Table space hash
+		 */
+		if (pgClassStruct->reltablespace != DEFAULTTABLESPACE_OID
+			&& pgClassStruct->reltablespace != GLOBALTABLESPACE_OID
+			&& pgClassStruct->reltablespace != InvalidOid)
+		{
+			bool		tablespaceFound;
+			TablespaceMapEntry *tbsEntry = hash_search(gpScanData->TablespaceMapHash,
+									(void *) &(pgClassStruct->reltablespace),
+													   HASH_ENTER,
+													   &tablespaceFound);
+
+			if (!tablespaceFound)
+			{
+				tbsEntry->path = GetDatabasePath(MyDatabaseId, pgClassStruct->reltablespace);
+			}
+		}
+	}
+
+	if (filter && filterOidHash != NULL)
+	{
+		/**
+		 * Cleanup redundant toast/aoseg filenode if have filter
+		 */
+		HASH_SEQ_STATUS status;
+		Oid		   *oid_entry;
+
+		hash_seq_init(&status, gpScanData->RelfilenodeMapHash);
+		while ((entry = (RelfilenodeScanMapEntry *) hash_seq_search(&status)) != NULL)
+		{
+			hash_search(filterOidHash, (void *) &entry->relid, HASH_FIND, &found);
+			if (!found)
+				hash_search(gpScanData->RelfilenodeMapHash,
+							(void *) &entry->relfilenode,
+							HASH_REMOVE,
+							NULL);
+		}
+
+		hash_seq_init(&status, filterOidHash);
+		while ((oid_entry = (Oid *) hash_seq_search(&status)) != NULL)
+		{
+			CHECK_FOR_INTERRUPTS();
+			hash_search(filterOidHash,
+						(void *) &oid_entry,
+						HASH_REMOVE,
+						NULL);
+		}
+		filterOidHash = NULL;
+	}
+	getAllUserTableSpace(gpScanData);
+	systable_endscan(scandesc);
+	heap_close(relation, AccessShareLock);
+}
+
+
+/*
+ * Scan database directory and get each filenode size
+ */
+Datum
+gp_filenode_scan(PG_FUNCTION_ARGS)
+{
+	FuncCallContext *funcctx;
+	char			dbpath[MAXPGPATH];
+	char			path[MAXPGPATH] = {0};
+	GpScanData		*gpScanData;
+	DIR				*pdir;
+	bool			nulls[GP_FILENODE_SCAN_NATTR];
+	Datum			values[GP_FILENODE_SCAN_NATTR];
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		/* create a function context for cross-call persistence */
+		funcctx = SRF_FIRSTCALL_INIT();
+
+		/* Switch to memory context appropriate for multiple function calls */
+		MemoryContext oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+		Name		nspname = PG_GETARG_NAME(0);
+		Name		rolname = PG_GETARG_NAME(1);
+		TupleDesc	tupdesc = CreateTemplateTupleDesc(GP_FILENODE_SCAN_NATTR);
+
+		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "reloid", INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "size", INT8OID, -1, 0);
+
+		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+
+		/* Construct path of target database */
+		memset(dbpath, 0, sizeof(dbpath));
+		strncat(dbpath, DataDir, (MAXPGPATH - strlen(dbpath) - 1) > 0 ? (MAXPGPATH - strlen(dbpath) - 1) : 0);
+		strncat(dbpath, "/", (MAXPGPATH - strlen(dbpath) - 1) > 0 ? (MAXPGPATH - strlen(dbpath) - 1) : 0);
+		strncat(dbpath, DatabasePath, (MAXPGPATH - strlen(dbpath) - 1) > 0 ? (MAXPGPATH - strlen(dbpath) - 1) : 0);
+		strncat(dbpath, "/", (MAXPGPATH - strlen(dbpath) - 1) > 0 ? (MAXPGPATH - strlen(dbpath) - 1) : 0);
+
+		/* Initialize struct members for scan data */
+		gpScanData = palloc(sizeof(GpScanData));
+		gpScanData->idxTuples = NULL;
+		gpScanData->coordinator_finish = false;
+		gpScanData->cdb_pgresults.pg_results = NULL;
+		gpScanData->cdb_pgresults.numResults = 0;
+		gpScanData->numTablespaces = 0;
+		gpScanData->curTableSpace = -1;
+		gpScanData->pent = NULL;
+		gpScanData->skip_readdir = false;
+
+		/* Retrieve oids for role and name, if any are specified */
+		if (strlen(NameStr(*rolname)) > 0)
+			gpScanData->roleid = GetSysCacheOid1(AUTHNAME, Anum_pg_authid_oid, PointerGetDatum(NameStr(*rolname)));
+		else
+			gpScanData->roleid = InvalidOid;
+
+		if (strlen(NameStr(*nspname)) > 0)
+			gpScanData->nspoid = GetSysCacheOid1(NAMESPACENAME,Anum_pg_namespace_oid,  CStringGetDatum(NameStr(*nspname)));
+		else
+			gpScanData->nspoid = InvalidOid;
+
+		funcctx->user_fctx = gpScanData;
+
+		if (CacheMemoryContext == NULL)
+			CreateCacheMemoryContext();
+
+		/* Initialize the hash table. */
+		MemSet(&(gpScanData->relfilenodeHashCtl), 0, sizeof(HASHCTL));
+		gpScanData->relfilenodeHashCtl.keysize = sizeof(Oid);
+		gpScanData->relfilenodeHashCtl.entrysize = sizeof(RelfilenodeScanMapEntry);
+        gpScanData->relfilenodeHashCtl.hash = uint32_hash;
+		gpScanData->relfilenodeHashCtl.hcxt = CacheMemoryContext;
+		gpScanData->RelfilenodeMapHash = hash_create("RelfilenodeMap cache", 64, &(gpScanData->relfilenodeHashCtl),
+								   HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
+
+		MemSet(&(gpScanData->tablespaceHashCtl), 0, sizeof(HASHCTL));
+		gpScanData->tablespaceHashCtl.keysize = sizeof(Oid);
+		gpScanData->tablespaceHashCtl.entrysize = sizeof(TablespaceMapEntry);
+        gpScanData->tablespaceHashCtl.hash = uint32_hash;
+		gpScanData->tablespaceHashCtl.hcxt = CacheMemoryContext;
+		gpScanData->TablespaceMapHash = hash_create("TablespaceMap cache", 64, &(gpScanData->tablespaceHashCtl),
+								   HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
+
+		build_filenode2oid_hash(gpScanData);
+
+		if (Gp_role == GP_ROLE_DISPATCH)
+		{
+			char	   *sql = psprintf("SELECT reloid, size FROM gp_filenode_scan('%s', '%s') WHERE size > 0 ORDER BY 1", quote_identifier(NameStr(*nspname)), quote_identifier(NameStr(*rolname)));
+
+			CdbDispatchCommand(sql, DF_WITH_SNAPSHOT, &(gpScanData->cdb_pgresults));
+			gpScanData->idxTuples = (int *) palloc(sizeof(int) * gpScanData->cdb_pgresults.numResults);
+			memset(gpScanData->idxTuples, 0, sizeof(int) * gpScanData->cdb_pgresults.numResults);
+		}
+		pdir = opendir(dbpath);
+		if (pdir == NULL)
+		{
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read directory \"%s\": %m", dbpath)));
+		}
+		gpScanData->pdir = pdir;
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	funcctx = SRF_PERCALL_SETUP();
+	gpScanData = (GpScanData *) funcctx->user_fctx;
+	while (Gp_role != GP_ROLE_DISPATCH || !gpScanData->coordinator_finish)
+	{
+		CHECK_FOR_INTERRUPTS();
+		int						filenodeid = 0;
+		int						save_filenodeid = 0;
+		int						filenode_suffix = 0;
+		HeapTuple				tuple;
+		Datum					result;
+		Oid						relfilenodeKey;
+		bool					found;
+		struct stat				statbuf;
+		int64					size;
+		RelfilenodeScanMapEntry *entry;
+
+		if (!gpScanData->skip_readdir)
+			gpScanData->pent = readdir(gpScanData->pdir);
+
+		gpScanData->skip_readdir = false;
+		if (gpScanData->pent == NULL)
+		{
+			closedir(gpScanData->pdir);
+			gpScanData->curTableSpace++;
+			if (gpScanData->curTableSpace == gpScanData->numTablespaces)
+			{
+				if (Gp_role == GP_ROLE_DISPATCH)
+				{
+					gpScanData->coordinator_finish = true;
+				}
+				break;
+			}
+			else
+			{
+				char	   *newpath = gpScanData->tableSpaces[gpScanData->curTableSpace];
+
+				pdir = opendir(newpath);
+				if (pdir == NULL)
+				{
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							 errmsg("could not read directory \"%s\": %m",
+									newpath)));
+				}
+				gpScanData->pdir = pdir;
+				continue;
+			}
+		}
+
+		if (strcmp(gpScanData->pent->d_name, ".") == 0 || strcmp(gpScanData->pent->d_name, "..") == 0)
+			continue;
+
+		sscanf(gpScanData->pent->d_name, "%u.%u", &filenodeid, &filenode_suffix);
+		/* skip useless file */
+		if (filenodeid == 0)
+			continue;
+
+		memset(path, 0, sizeof(path));
+		if (gpScanData->curTableSpace == -1)
+		{
+			strncat(path, dbpath, (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+			strncat(path, gpScanData->pent->d_name, (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+		}
+		else
+		{
+			strncat(path, gpScanData->tableSpaces[gpScanData->curTableSpace], (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+			strncat(path, "/", (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+			strncat(path, gpScanData->pent->d_name, (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+		}
+		if (lstat(path, &statbuf) != 0)
+			continue;
+
+		relfilenodeKey = filenodeid;
+		entry = hash_search(gpScanData->RelfilenodeMapHash, (void *) &relfilenodeKey, HASH_FIND, &found);
+
+		if (!found)
+			continue;
+
+		size = statbuf.st_size;
+
+		/* Hold! check if next dir is same filenodeid */
+		save_filenodeid = filenodeid;
+		while (save_filenodeid == filenodeid)
+		{
+			CHECK_FOR_INTERRUPTS();
+			/*
+			 * Check next file for optimize AOCO case For AO/CO, filenode name
+			 * may like 123.345, 123.346, 123.532 each file is a column. This
+			 * loop tries to sum them in one tuple
+			 */
+			gpScanData->pent = readdir(gpScanData->pdir);
+			gpScanData->skip_readdir = true;
+			if (gpScanData->pent == NULL)
+				break;
+			if (strcmp(gpScanData->pent->d_name, ".") == 0 || strcmp(gpScanData->pent->d_name, "..") == 0)
+				continue;
+
+			filenodeid = 0;
+			filenode_suffix = 0;
+			sscanf(gpScanData->pent->d_name, "%u.%u", &filenodeid, &filenode_suffix);
+			if (filenodeid == 0)
+				continue;
+
+			if (filenodeid == save_filenodeid)
+			{
+				/* The filenodeid of next file is the same */
+				memset(path, 0, sizeof(path));
+				if (gpScanData->curTableSpace == -1)
+				{
+					strncat(path, dbpath, (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+					strncat(path, gpScanData->pent->d_name, (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+				}
+				else
+				{
+					strncat(path, gpScanData->tableSpaces[gpScanData->curTableSpace], (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+					strncat(path, "/", (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+					strncat(path, gpScanData->pent->d_name, (MAXPGPATH - strlen(path) - 1) > 0 ? (MAXPGPATH - strlen(path) - 1) : 0);
+				}
+				if (lstat(path, &statbuf) == 0)
+				{
+					size += statbuf.st_size;
+					gpScanData->skip_readdir = false;
+				}
+			}
+			else
+				break;
+		}
+
+		memset(nulls, 0, sizeof(nulls));
+		values[0] = ObjectIdGetDatum(entry->relid);
+		values[1] = Int64GetDatum(size);
+
+		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+		result = HeapTupleGetDatum(tuple);
+
+		SRF_RETURN_NEXT(funcctx, result);
+	}
+
+	/* n-way merge */
+	if (Gp_role == GP_ROLE_DISPATCH)
+	{
+		CHECK_FOR_INTERRUPTS();
+		int			r;
+		int			n = gpScanData->cdb_pgresults.numResults;
+		struct pg_result *pgresult;
+		int			idxTuples;
+		Oid		   *head_oids;
+		Oid			current_relid = 0;
+		Oid			next_relid = 0;
+		int64		sum_file_size = 0;
+
+		head_oids = (Oid *) palloc(sizeof(Oid) * n);
+		memset(head_oids, 0, sizeof(Oid) * n);
+
+		/* Find smallest relid from head of all ResultSets */
+		for (r = 0; r < n; r++)
+		{
+			CHECK_FOR_INTERRUPTS();
+			pgresult = gpScanData->cdb_pgresults.pg_results[r];
+			idxTuples = gpScanData->idxTuples[r];
+
+			if (idxTuples >= PQntuples(pgresult))
+			{
+				/* Have reached bottom of this ResultSet */
+				continue;
+			}
+
+			if (PQresultStatus(pgresult) != PGRES_TUPLES_OK)
+			{
+				cdbdisp_clearCdbPgResults(&(gpScanData->cdb_pgresults));
+				ereport(ERROR,
+						(errmsg("unexpected result from segment: %d",
+								PQresultStatus(pgresult))));
+			}
+			if (PQnfields(pgresult) != GP_FILENODE_SCAN_NATTR)
+			{
+				cdbdisp_clearCdbPgResults(&(gpScanData->cdb_pgresults));
+				ereport(ERROR,
+						(errmsg("unexpected shape of result from segment (%d rows, %d cols)",
+								PQntuples(pgresult), PQnfields(pgresult))));
+			}
+
+			/* Retrieve relid from head of current ResultSet */
+			head_oids[r] = DatumGetObjectId(DirectFunctionCall1(int4in, CStringGetDatum(PQgetvalue(pgresult, idxTuples, 0))));
+
+			if (current_relid == 0 || current_relid > head_oids[r])
+				current_relid = head_oids[r];
+		}
+
+		if (current_relid > 0)
+		{
+			/* Visit all ResultSets again to sum counters of current_relid */
+			for (r = 0; r < n; r++)
+			{
+				if (head_oids[r] > 0 && head_oids[r] == current_relid)
+				{
+					pgresult = gpScanData->cdb_pgresults.pg_results[r];
+					idxTuples = gpScanData->idxTuples[r];
+
+					sum_file_size += DatumGetInt64(DirectFunctionCall1(int8in, CStringGetDatum(PQgetvalue(pgresult, idxTuples, 1))));
+
+					/* Move head pointer to next tuple for this ResultSet */
+					gpScanData->idxTuples[r]++;
+
+					/* Look ahead for all same relid */
+					while (1)
+					{
+						CHECK_FOR_INTERRUPTS();
+						idxTuples++;
+						if (idxTuples >= PQntuples(pgresult))
+						{
+							/* Have reached bottom of this ResultSet */
+							break;
+						}
+						next_relid = DatumGetObjectId(DirectFunctionCall1(int4in, CStringGetDatum(PQgetvalue(pgresult, idxTuples, 0))));
+						if (next_relid != current_relid)
+						{
+							/* Finished look ahead */
+							break;
+						}
+
+						sum_file_size += DatumGetInt64(DirectFunctionCall1(int8in, CStringGetDatum(PQgetvalue(pgresult, idxTuples, 1))));
+
+						/* Move head pointer to next tuple for this ResultSet */
+						gpScanData->idxTuples[r]++;
+					}
+				}
+			}
+
+			memset(nulls, 0, sizeof(nulls));
+			values[0] = ObjectIdGetDatum(current_relid);
+			values[1] = Int64GetDatum(sum_file_size);
+
+			HeapTuple	tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+			Datum		result = HeapTupleGetDatum(tuple);
+
+			SRF_RETURN_NEXT(funcctx, result);
+		}
+
+		/* Done merge and emit results */
+		cdbdisp_clearCdbPgResults(&(gpScanData->cdb_pgresults));
+	}
+
+	RelfilenodeMapInvalidate(gpScanData);
+	/* Reached the end of the entry array, we're done */
+	SRF_RETURN_DONE(funcctx);
 }
 
 Datum
@@ -1286,3 +1882,5 @@ pg_relation_filepath(PG_FUNCTION_ARGS)
 
 	PG_RETURN_TEXT_P(cstring_to_text(path));
 }
+
+

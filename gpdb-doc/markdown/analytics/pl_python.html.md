@@ -36,9 +36,7 @@ The PL/Python language is installed with Greenplum Database. To create and run a
 
 Greenplum installs a compatible version of Python 3.9 in `$GPHOME/ext`.
 
-For each database that requires its use, register the PL/Python language with the SQL command `CREATE EXTENSION`. Separate extensions are provided for Python 3.9 support, and you can install either or both extensions to a database. 
-
-Because PL/Python is an untrusted language, only superusers can register PL/Python with a database. 
+For each database that requires its use, register the PL/Python language with the SQL command `CREATE EXTENSION`. Because PL/Python is an untrusted language, only superusers can register PL/Python with a database. 
 
 Run this command as the `gpadmin` user to register PL/Python with Python 3.9 support:
 

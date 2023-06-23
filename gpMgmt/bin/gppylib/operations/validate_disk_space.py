@@ -55,8 +55,8 @@ class RelocateDiskUsage:
         for hostaddr, filesystems in self._target_host_filesystems().items():
             for fs in filesystems:
                 if fs.disk_free <= fs.disk_required:
-                    logger.error("Not enough space on host {} for directories {}." %(hostaddr, ', '.join(map(str, fs.directories))))
-                    logger.error("Filesystem {} has {} kB available, but requires {} kB." %(fs.name, fs.disk_free, fs.disk_required))
+                    logger.error("Not enough space on host {} for directories {}." .format(hostaddr, ', '.join(map(str, fs.directories))))
+                    logger.error("Filesystem {} has {} kB available, but requires {} kB." .format(fs.name, fs.disk_free, fs.disk_required))
                     return False
 
         return True
@@ -104,18 +104,32 @@ class RelocateDiskUsage:
 
         return disk_usage_dirs
 
+    #create a host to directories mapping
+    def _get_hostaddr_directories(self):
+        #Create a map of host with all it's directories
+        hostaddr_to_dirs_mapping = {}
+        for pair in self.src_tgt_mirror_pair_list:
+            if pair.target_hostaddr not in hostaddr_to_dirs_mapping:
+                hostaddr_to_dirs_mapping[pair.target_hostaddr] = [pair.target_data_dir] 
+                hostaddr_to_dirs_mapping[pair.target_hostaddr].append( list(pair.source_tablespace_usage.keys()) )
+                continue;
+            hostaddr_to_dirs_mapping[pair.target_hostaddr].append(pair.target_data_dir)
+            
+        logger.debug("Target Host Address to Directory Mapping is {} ." .format(hostaddr_to_dirs_mapping))
+    
+    
     # Return a map of hostaddr to target filssytem list containing disk space available and
     # disk space required statistics.
     def _target_host_filesystems(self):
         # hostaddr to Filesystem List mapping
         hostaddr_to_filesystems_mapping = {}
 
-        for pair in self.src_tgt_mirror_pair_list:
+        for pair in self._get_hostaddr_directories():
             target_filesystems = self._get_target_filesystem(pair)
 
             # if host addr is not allready present , create one
             if pair.target_hostaddr not in hostaddr_to_filesystems_mapping:
-                    hostaddr_to_filesystems_mapping[pair.target_hostaddr] = set()
+                    hostaddr_to_filesystems_mapping[pair.target_hostaddr] = []
 
             # Add first filesystem to list if filesystem is not present
             tgt_host_filesystems = hostaddr_to_filesystems_mapping[pair.target_hostaddr]

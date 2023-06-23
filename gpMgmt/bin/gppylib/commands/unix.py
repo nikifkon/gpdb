@@ -13,6 +13,7 @@ import socket
 import signal
 import uuid
 import pipes
+import shlex
 
 from gppylib.gplog import get_default_logger
 from gppylib.commands.base import *
@@ -194,8 +195,13 @@ class GenericPlatform():
     def get_machine_arch_cmd(self):
         return 'uname -i'
 
+    """
+    TODO: Sunil Need to be removed
     def getDiskFreeCmd(self):
         return findCmdInPath('df') + " -k"
+    """
+    def getDiskUsageCmd(self):
+        return findCmdInPath('du') + " -ks"
 
     def getTarCmd(self):
         return findCmdInPath('tar')
@@ -211,10 +217,13 @@ class LinuxPlatform(GenericPlatform):
     def getName(self):
         return "linux"
 
+    """
+    TODO: Sunil  NEED to Remove
     def getDiskFreeCmd(self):
         # -P is for POSIX formatting.  Prevents error 
         # on lines that would wrap
         return findCmdInPath('df') + " -Pk"
+    """
 
     def getPing6(self):
         return findCmdInPath('ping6')
@@ -304,12 +313,24 @@ class Ping(Command):
 
 
 # -------------df----------------------
+#Note : this purposely does not follow similar pattern of other commands due to limitation of command framework.
 class DiskFree(Command):
-    def __init__(self, name, directory, ctxt=LOCAL, remoteHost=None):
+    """
+    Calculate Disk free executes a python script on each host to determine the 
+    disk space free for each filesystem
+    """
+    def __init__(self, remoteHost, directories):
+        name = "Calcualte Disk Space free on target host"
+        cmdStr = '$GPHOME/bin/lib/calculate_disk_free.py --directories \"%s\"' %(shlex.quote(",".join(directories)))
+        Command.__init__(self, name, cmdStr, ctxt=REMOTE, remoteHost=remoteHost)
+        """
+        TODO Sunil Remove this
         self.directory = directory
         cmdStr = "%s %s" % (SYSTEM.getDiskFreeCmd(), directory)
         Command.__init__(self, name, cmdStr, ctxt, remoteHost)
-
+        """
+    """
+    Sunil Remo todo
     @staticmethod
     def get_size(name, remote_host, directory):
         dfCmd = DiskFree(name, directory, ctxt=REMOTE, remoteHost=remote_host)
@@ -343,6 +364,51 @@ class DiskFree(Command):
         disk_free = self.get_disk_free_output()
         bytesFree = int(disk_free[3]) * 1024
         return bytesFree
+    """
+# -----------------------------------du----------------------------------------
+class DiskUsage(Command):
+    def __init__(self, name, directory, ctxt=LOCAL, remoteHostAddr=None):
+        self.directory = directory
+        cmdStr = "%s %s" %(SYSTEM.getDiskUsageCmd(), directory)
+        Command.__init__(self, name, cmdStr, ctxt, remoteHostAddr)
+
+    @staticmethod
+    def get_usage(name, remote_host, directory):
+        dfCmd = DiskUsage(name, directory, ctxt=REMOTE, remoteHostAddr=remote_host)
+        dfCmd.run(validateAfter=True)
+        return dfCmd.get_Bytes_used()
+
+    @staticmethod
+    def get_usage_local(name, directory):
+        dfCmd = DiskUsage(name, directory)
+        dfCmd.run(validateAfter=True)
+        return dfCmd.get_bytes_used()
+
+    @staticmethod
+    def get_disk_usage_info_local(name, directory):
+        dfCmd=DiskUsage(name, directory)
+        dfCmd.run(validateAfter=True)
+        return dfCmd.disk_usage_output()
+
+    def disk_usage_output(self):
+        ''' expected output of the form:
+            123443 /directory/
+            Return data in list format:
+            ['2322323233', '/directory/']
+        '''
+        rawIn = self.results.stdout.split('\n')[0]
+        return rawIn.split()
+
+
+    def kbytes_used(self):
+        disk_usage = self.disk_usage_output()
+        KbytesUsed = int(disk_usage[0])
+        return KbytesUsed
+
+    def bytes_used(self):
+        disk_usage = self.disk_usage_output()
+        bytesUsed = int(disk_usage[0]) * 1024
+        return bytesUsed
 
 
 # -------------mkdir------------------

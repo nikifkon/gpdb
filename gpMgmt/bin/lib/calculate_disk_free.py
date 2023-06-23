@@ -37,7 +37,7 @@ def calculate_disk_free(directories):
     #embedding directory in filesystem
     filesystems = []
     for fs , directories in filesystem_to_dirs.items():
-        fs.directories = set(directories)
+        fs.directories = directories
         filesystems.append(fs)
 
     return filesystems

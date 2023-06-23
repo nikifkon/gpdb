@@ -28,6 +28,7 @@ try:
     from gppylib.parseutils import line_reader, check_values, canonicalize_address
     from gppylib.operations.segment_tablespace_locations import get_tablespace_locations
     from gppylib.operations.update_pg_hba_on_segments import update_pg_hba_for_new_mirrors
+    from gppylib.operations.validate_disk_space import RelocateSegmentPair, RelocateDiskUsage, InsufficientDiskSpaceError
 
 except ImportError as e:
     sys.exit('ERROR: Cannot import modules.  Please check that you have sourced greenplum_path.sh.  Detail: ' + str(e))
@@ -348,6 +349,7 @@ try:
     newConfig.read_input_file(options.input_filename)
 
     PgHbaEntriesToUpdate = []
+    SrcTgtMirrorPairList = []
     """ Do some sanity checks on the input. """
     for oldMirror, newMirror in zip(newConfig.oldMirrorList, newConfig.newMirrorList):
         seg = lookupGpdb(oldMirror.address, oldMirror.port, oldMirror.dataDirectory)
@@ -370,7 +372,14 @@ try:
                 # identify the corresponding primary pair of the mirror being moved
                 if segment.getSegmentContentId() == seg.getSegmentContentId() and segment.getSegmentRole() != seg.getSegmentRole():
                     PgHbaEntriesToUpdate.append((segment.getSegmentDataDirectory(), segment.getSegmentHostName(), newMirror.address))
+        #Create a pair of primary with mirror and add it to Primary Mirror pair list
+        pair = RelocateSegmentPair(oldMirror.address, oldMirror.dataDirectory, newMirror.address, newMirror.dataDirectory)
+        SrcTgtMirrorPairList.append(pair)
 
+    """Check whether target hosts has sufficent space required to move mirror from source hosts to target host """
+    diskUsage = RelocateDiskUsage(SrcTgtMirrorPairList, options.batch_size)
+    if not diskUsage.validate_disk_space():
+        raise InsufficientDiskSpaceError("Insufficient disk space on target mirror hosts.")
 
     """ Prepare common execution steps for running commands on segments """
     oldMirrorsToMove = [mirror for mirror in newConfig.oldMirrorList if not mirror.inPlace]

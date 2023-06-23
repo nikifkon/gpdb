@@ -14,6 +14,7 @@ PROGRAMS= __init__.py \
 	gpcreateseg.sh \
 	gppinggpfdist.py \
 	gpstate.py \
+	calculate_disk_free.py \
 	multidd
 
 installdirs:

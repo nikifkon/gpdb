@@ -104,19 +104,24 @@ class RelocateDiskUsage:
 
         return disk_usage_dirs
 
+
     #create a host to directories mapping
     def _get_hostaddr_directories(self):
         #Create a map of host with all it's directories
         hostaddr_to_dirs_mapping = {}
         for pair in self.src_tgt_mirror_pair_list:
+            tblSpcDirs = list(pair.source_tablespace_usage.keys())
             if pair.target_hostaddr not in hostaddr_to_dirs_mapping:
-                hostaddr_to_dirs_mapping[pair.target_hostaddr] = [pair.target_data_dir] 
-                hostaddr_to_dirs_mapping[pair.target_hostaddr].append( list(pair.source_tablespace_usage.keys()) )
-                continue;
+                hostaddr_to_dirs_mapping[pair.target_hostaddr] = [pair.target_data_dir]  
+                if len(tblSpcDirs) > 0 :
+                    hostaddr_to_dirs_mapping[pair.target_hostaddr].append(tblSpcDirs)
+                continue
             hostaddr_to_dirs_mapping[pair.target_hostaddr].append(pair.target_data_dir)
+            if len(tblSpcDirs) > 0:
+                hostaddr_to_dirs_mapping[pair.target_hostaddr].append(tblSpcDirs)
             
         logger.debug("Target Host Address to Directory Mapping is {} ." .format(hostaddr_to_dirs_mapping))
-    
+        return hostaddr_to_dirs_mapping
     
     # Return a map of hostaddr to target filssytem list containing disk space available and
     # disk space required statistics.
@@ -124,15 +129,15 @@ class RelocateDiskUsage:
         # hostaddr to Filesystem List mapping
         hostaddr_to_filesystems_mapping = {}
 
-        for pair in self._get_hostaddr_directories():
-            target_filesystems = self._get_target_filesystem(pair)
+        for hostaddr, dirs in self._get_hostaddr_directories().items():
+            target_filesystems = self._get_target_filesystem(hostaddr, dirs)
 
             # if host addr is not allready present , create one
-            if pair.target_hostaddr not in hostaddr_to_filesystems_mapping:
-                    hostaddr_to_filesystems_mapping[pair.target_hostaddr] = []
+            if hostaddr not in hostaddr_to_filesystems_mapping:
+                    hostaddr_to_filesystems_mapping[hostaddr] = []
 
             # Add first filesystem to list if filesystem is not present
-            tgt_host_filesystems = hostaddr_to_filesystems_mapping[pair.target_hostaddr]
+            tgt_host_filesystems = hostaddr_to_filesystems_mapping[hostaddr]
             if not tgt_host_filesystems:
                 tgt_host_filesystems.extend(target_filesystems)
                 continue
@@ -154,17 +159,15 @@ class RelocateDiskUsage:
 
 
     #For each source target pair fetch the target filesystem with free disk space available
-    def _get_target_filesystem(self, pair):
+    def _get_target_filesystem(self, hostaddr, dirs):
         #List of filesystem info encapsulated in FileSystem()
         tgt_filesystems = []
-        
-        directories = [pair.target_data_dir] + list(pair.source_tablespace_usage.keys())
-        num_dir = len(directories)
+        num_dir = len(dirs)
         
         #TODO : REquire checking of dir number ???? 
         pool = WorkerPool( numWorkers=min(num_dir, self.batch_size))
         try:
-            cmd = DiskFree(pair.target_hostaddr, directories)
+            cmd = DiskFree(hostaddr, dirs)
             pool.addCommand(cmd)
             pool.join()
         finally:
@@ -179,7 +182,7 @@ class RelocateDiskUsage:
             tgt_filesystems = pickle.loads(base64.urlsafe_b64decode(cmd.get_results().stdout))
 
             for fs in tgt_filesystems:
-                fs.add_disk_usage(pair)
+                fs.add_disk_usage(self.src_tgt_mirror_pair_list)
 
 
         return tgt_filesystems
@@ -199,12 +202,19 @@ class FileSystem:
 
     # Add Required disk space in target filesystem by comparing filesystem 
     # directory list with target directory 
-    def add_disk_usage(self, pair):
-        for dir in self.directories:
-            if dir == pair.target_data_dir:
-                self.disk_required += pair.source_data_dir_usage
-            else: #TODO - Check below else without condition
-                self.disk_required += pair.source_tablespace_usage[dir]
+    def add_disk_usage(self, src_tgt_mirror_pair_list):
+        #Walk-through the pair list to get the matching pair
+        for pair in src_tgt_mirror_pair_list:
+            tblSpcDirs = list(pair.source_tablespace_usage.keys())
+            #walk through target data directory
+            for dir in self.directories:
+                if dir == pair.target_data_dir:
+                    self.disk_required += pair.source_data_dir_usage
+                else: #TODO - Check below else without condition
+                    #check for Tablespace dirs for  that pair of mirror
+                    for tblspcdir in tblSpcDirs:
+                        if dir == tblspcdir:
+                            self.disk_required += pair.source_tablespace_usage[dir]
 
 
 class InsufficientDiskSpaceError(Exception):

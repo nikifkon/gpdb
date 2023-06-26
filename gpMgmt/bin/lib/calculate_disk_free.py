@@ -11,7 +11,37 @@ import sys
 from gppylib.operations.validate_disk_space import FileSystem
 from gppylib.gpparseopts import OptParser, OptChecker
 from gppylib.mainUtils import addStandardLoggingAndHelpOptions
+#from gppylib.commands.unix import
 
+
+
+#for each directory passed calculate the disk usage and 
+#Return a list of filesystem object
+def calculate_disk_usage(directories):
+    dirs_usage = []
+
+    for dir in directories:
+        cmd = __disk_usage(dir)
+        if cmd.returncode > 0:
+            sys.stderr.write("Failed to calculate free usage space : %s" % cmd.stderr)
+            return []
+        
+        #fetch the disk usage 
+        parts = cmd.stdout.split()
+        fs = FileSystem(dir, disk_usage=int(parts[0]))
+        dirs_usage.append(fs)
+
+    return  dirs_usage
+
+
+
+def __disk_usage(directory):
+    cmd  = subprocess.run(["du", "-ks", directory],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE,
+                      universal_newlines=True)
+    
+    return cmd 
 
 
 # for each directory the filesystem and calculate the free disk space.
@@ -53,6 +83,7 @@ def __disk_free(directory):
                           stderr=subprocess.PIPE,
                           universal_newlines=True)
 
+    #Check for "/" root directory input
     if directory == os.sep:
         return cmd
 
@@ -61,6 +92,27 @@ def __disk_free(directory):
         return __disk_free(path)
 
     return cmd
+
+
+
+def __disk_free_v2(directory):
+    #the -P flag is for POSIX formatting to prevent errors on lines that would wrap
+    cmd =  subprocess.run(["mkdir -pv " , directory, "| awk '{print $4}' | head -n 1"],
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE,
+                          universal_newlines=True)
+
+    #Check for "/" root directory input
+    if directory == os.sep:
+        return cmd
+
+    if cmd.returncode > 0:
+        path, last_dir = os.path.split(directory)
+        return __disk_free(path)
+
+    return cmd
+
+
 
 
 def create_parser():
@@ -76,6 +128,11 @@ def create_parser():
                        action='callback',
                        callback= lambda option, opt, value, parser: setattr(parser.values, option.dest, value.split(',')),
                        dest='directories')
+    parser.add_option('-c', "--command-type",
+                      help='Commmand to calculate disk usage or disk free ',
+                      dest="cmdType",
+                      type="string")
+
 
     return parser
 
@@ -89,7 +146,13 @@ def main():
     parser = create_parser()
     (options, args) = parser.parse_args()
 
-    filesystems = calculate_disk_free(options.directories)
+    if options.cmdType == "df":
+            filesystems = calculate_disk_free(options.directories)
+    elif options.cmdType == "du":
+            filesystems = calculate_disk_usage(options.directories)
+    else:
+        sys.stderr.write("Invalid cmdType.Please choose either du or df.")
+
     sys.stdout.write(base64.urlsafe_b64encode(pickle.dumps(filesystems)).decode('UTF-8'))
     return
 

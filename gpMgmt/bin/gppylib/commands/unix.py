@@ -321,7 +321,7 @@ class DiskFree(Command):
     """
     def __init__(self, remoteHost, directories):
         name = "Calcualte Disk Space free on target host"
-        cmdStr = '$GPHOME/bin/lib/calculate_disk_free.py --directories \"%s\"' %(shlex.quote(",".join(directories)))
+        cmdStr = '$GPHOME/bin/lib/calculate_disk_free.py -c df --directories \"%s\"' %(shlex.quote(",".join(directories)))
         Command.__init__(self, name, cmdStr, ctxt=REMOTE, remoteHost=remoteHost)
         """
         TODO Sunil Remove this
@@ -367,10 +367,15 @@ class DiskFree(Command):
     """
 # -----------------------------------du----------------------------------------
 class DiskUsage(Command):
-    def __init__(self, name, directory, ctxt=LOCAL, remoteHostAddr=None):
+    def __init__(self, name, directories, ctxt=LOCAL, remoteHost=None):
+        """
         self.directory = directory
         cmdStr = "%s %s" %(SYSTEM.getDiskUsageCmd(), directory)
         Command.__init__(self, name, cmdStr, ctxt, remoteHostAddr)
+        """
+        name = "Calcualte Disk Space free on target host"
+        cmdStr = '$GPHOME/bin/lib/calculate_disk_free.py -c du --directories \"%s\"' %(shlex.quote(",".join(directories)))
+        Command.__init__(self, name, cmdStr, ctxt=REMOTE, remoteHost=remoteHost)
 
     @staticmethod
     def get_usage(name, remote_host, directory):

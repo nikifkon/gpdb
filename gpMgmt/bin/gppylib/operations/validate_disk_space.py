@@ -61,6 +61,25 @@ class RelocateDiskUsage:
 
         return True
 
+     #create a host to directories mapping
+    def _get_source_hostaddr_directories(self):
+        #Create a map of host with all it's directories
+        hostaddr_to_dirs_mapping = {}
+        for pair in self.src_tgt_mirror_pair_list:
+            tblSpcDirs = list(pair.source_tablespace_usage.keys())
+            if pair.source_hostaddr not in hostaddr_to_dirs_mapping:
+                hostaddr_to_dirs_mapping[pair.source_hostaddr] = [pair.source_data_dir]  
+                if len(tblSpcDirs) > 0 :
+                    hostaddr_to_dirs_mapping[pair.source_hostaddr].append(tblSpcDirs)
+                continue
+            hostaddr_to_dirs_mapping[pair.source_hostaddr].append(pair.source_data_dir)
+            if len(tblSpcDirs) > 0:
+                hostaddr_to_dirs_mapping[pair.source_hostaddr].append(tblSpcDirs)
+            
+        logger.debug("Target Host Address to Directory Mapping is {} ." .format(hostaddr_to_dirs_mapping))
+        return hostaddr_to_dirs_mapping
+
+
     # Calculate disk usage for the data directory, and all user defined
     # tablespaces for the source host.
     # Note: The user can specify a different target data directory from
@@ -68,10 +87,28 @@ class RelocateDiskUsage:
     # locations from the source to target since the primary and mirror tablespace
     # locations must match.
     def _determine_source_disk_usage(self):
+        dirs_usage_stats={}
+        
+        for hostaddr, dirs in self._get_source_hostaddr_directories().items():
+            dir_usage_stats = self._disk_usage(hostaddr, dirs)
+            dirs_usage_stats.update(dir_usage_stats)
+            
+        
+        #map back the usage to pair 
         for pair in self.src_tgt_mirror_pair_list:
-            #Key being data dir and value being disk usage
-            pair.source_data_dir_usage = self._disk_usage(pair.source_hostaddr, [pair.source_data_dir]) [pair.source_data_dir]
-            pair.source_tablespace_usage = self._disk_usage(pair.source_hostaddr, get_segment_tablespace_dirs(pair.source_data_dir))
+            tblSpcDirs = list(pair.source_tablespace_usage.keys())
+            tablespace_dir_usage = {}
+            #walk through target data directory
+            for dir, usage in dirs_usage_stats.items():
+                if dir == pair.source_data_dir:
+                    pair.source_data_dir_usage = usage
+                else: #TODO - Check below else without condition
+                    #check for Tablespace dirs for  that pair of mirror
+                    for tblspcdir in tblSpcDirs:
+                        if dir == tblspcdir:
+                            if dir not in tablespace_dir_usage:
+                                tablespace_dir_usage[dir] = usage               
+            pair.source_tablespace_usage =  tablespace_dir_usage
 
 
     """ Determine the Disk usage of mirror directory in source host """
@@ -85,10 +122,9 @@ class RelocateDiskUsage:
 
         pool = WorkerPool(numWorkers=min(num_dir, self.batch_size))
         try:
-            for directory in dirs:
-                cmd = DiskUsage('Check Source Segment disk space usage', directory, ctxt=REMOTE, remoteHostAddr=hostaddr)
-                pool.addCommand(cmd)
-                pool.addCommand(cmd)
+            #for directory in dirs:
+            cmd = DiskUsage('Check Source Segment disk space usage', dirs, ctxt=REMOTE, remoteHost=hostaddr)
+            pool.addCommand(cmd)
             pool.join()
         #exception required?
         finally:
@@ -100,13 +136,16 @@ class RelocateDiskUsage:
             if not cmd.was_successful():
                 raise Exception("Unable to check disk usage on source segment:" + cmd.get_results().stderr )
 
-            disk_usage_dirs[cmd.directory] = cmd.kbytes_used()
+            src_filesystems = pickle.loads(base64.urlsafe_b64decode(cmd.get_results().stdout))
+
+            for fs in src_filesystems:
+                disk_usage_dirs[fs.name] = fs.disk_usage
 
         return disk_usage_dirs
 
 
     #create a host to directories mapping
-    def _get_hostaddr_directories(self):
+    def _get_target_hostaddr_directories(self):
         #Create a map of host with all it's directories
         hostaddr_to_dirs_mapping = {}
         for pair in self.src_tgt_mirror_pair_list:
@@ -129,7 +168,7 @@ class RelocateDiskUsage:
         # hostaddr to Filesystem List mapping
         hostaddr_to_filesystems_mapping = {}
 
-        for hostaddr, dirs in self._get_hostaddr_directories().items():
+        for hostaddr, dirs in self._get_target_hostaddr_directories().items():
             target_filesystems = self._get_target_filesystem(hostaddr, dirs)
 
             # if host addr is not allready present , create one
@@ -194,14 +233,16 @@ class FileSystem:
     Information about filesystem free disk space and directory list for mirror 
     All free disk space and disk space required will be in kB
     """
-    def __init__(self, name, disk_free=0):
+    def __init__(self, name, disk_free=0, disk_usage=0):
+        self.disk_usage = disk_usage
         self.name = name
         self.disk_free = disk_free  
         self.disk_required = 0
         self.directories = None
 
+
     # Add Required disk space in target filesystem by comparing filesystem 
-    # directory list with target directory 
+    # directory list with target directory ~/
     def add_disk_usage(self, src_tgt_mirror_pair_list):
         #Walk-through the pair list to get the matching pair
         for pair in src_tgt_mirror_pair_list:

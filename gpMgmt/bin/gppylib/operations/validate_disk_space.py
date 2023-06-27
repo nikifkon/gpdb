@@ -71,7 +71,8 @@ class RelocateDiskUsage:
         for pair in self.src_tgt_mirror_pair_list:
             #Key being data dir and value being disk usage
             pair.source_data_dir_usage = self._disk_usage(pair.source_hostaddr, [pair.source_data_dir]) [pair.source_data_dir]
-            pair.source_tablespace_usage = self._disk_usage(pair.source_hostaddr, get_segment_tablespace_dirs(pair.source_data_dir))
+            pair.source_tablespace_usage = self._disk_usage(pair.source_hostaddr, get_tablespace_locations(False, pair.source_data_dir))
+            #pair.source_tablespace_usage = self._disk_usage(pair.source_hostaddr, get_segment_tablespace_dirs(pair.source_data_dir))
 
 
     """ Determine the Disk usage of mirror directory in source host """

@@ -11,7 +11,7 @@ import sys
 from gppylib.operations.validate_disk_space import FileSystem
 from gppylib.gpparseopts import OptParser, OptChecker
 from gppylib.mainUtils import addStandardLoggingAndHelpOptions
-
+from gppylib.commands.unix import getLocalHostname, findCmdInPath
 
 
 # for each directory the filesystem and calculate the free disk space.
@@ -38,6 +38,7 @@ def calculate_disk_free(directories):
     filesystems = []
     for fs , directories in filesystem_to_dirs.items():
         fs.directories = directories
+        fs.hostaddr = getLocalHostname()
         filesystems.append(fs)
 
     return filesystems
@@ -53,6 +54,7 @@ def __disk_free(directory):
                           stderr=subprocess.PIPE,
                           universal_newlines=True)
 
+    #Check for "/" root directory input
     if directory == os.sep:
         return cmd
 

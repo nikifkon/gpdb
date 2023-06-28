@@ -3,6 +3,7 @@ import pickle
 
 from gppylib.commands.base import REMOTE, WorkerPool, Command
 from gppylib.commands.unix import DiskFree, DiskUsage, MakeDirectory
+from gppylib import gparray, gplog, userinput
 from gppylib.db import dbconn
 from gppylib.gplog import get_default_logger
 from gppylib.operations.segment_tablespace_locations import get_tablespace_locations
@@ -54,10 +55,17 @@ class RelocateDiskUsage:
         #Fetch the free space available in target host and compare it with required disk space
         for hostaddr, filesystems in self._target_host_filesystems().items():
             for fs in filesystems:
+                #Add 10% buffer in the free disk space available to warn/notice user if we are filling up the full disk space if
+                #Disk free space is exactly same as disk space required
+                disk_free_space_with_buff = int ((10 * fs.disk_required ) / 100)
                 if fs.disk_free <= fs.disk_required:
                     logger.error("Not enough space on host {} for directories {}." .format(hostaddr, ', '.join(map(str, fs.directories))))
                     logger.error("Filesystem {} has {} kB available, but requires {} kB." .format(fs.name, fs.disk_free, fs.disk_required))
                     return False
+                elif fs.disk_free < (disk_free_space_with_buff + fs.disk_required) :
+                    if not userinput.ask_yesno(None, "\nLess than 10% of disk space will be avialable after mirror is moved."\
+                                                      "Continue with segment move procedure", 'N'):
+                        raise UserAbortedException()
 
         return True
 
@@ -68,6 +76,7 @@ class RelocateDiskUsage:
     # locations from the source to target since the primary and mirror tablespace
     # locations must match.
     def _determine_source_disk_usage(self):
+        logger.debug("Determinig source disk usage of mirrors...")
         for pair in self.src_tgt_mirror_pair_list:
             #Key being data dir and value being disk usage
             pair.source_data_dir_usage = self._disk_usage(pair.source_hostaddr, [pair.source_data_dir]) [pair.source_data_dir]
@@ -81,6 +90,7 @@ class RelocateDiskUsage:
         disk_usage_dirs = {}
         num_dir = len(dirs)
 
+        #In case there are no input dirs return xfrom here
         if num_dir <= 0:
             return disk_usage_dirs
 
@@ -89,9 +99,7 @@ class RelocateDiskUsage:
             for directory in dirs:
                 cmd = DiskUsage('Check Source Segment disk space usage', directory, ctxt=REMOTE, remoteHostAddr=hostaddr)
                 pool.addCommand(cmd)
-                pool.addCommand(cmd)
             pool.join()
-        #exception required?
         finally:
             pool.haltWork()
             pool.joinWorkers()
@@ -127,49 +135,60 @@ class RelocateDiskUsage:
     # Return a map of hostaddr to target filssytem list containing disk space available and
     # disk space required statistics.
     def _target_host_filesystems(self):
+        
+        logger.debug("Determinig Target host available free disk space.")
+        
         # hostaddr to Filesystem List mapping
         hostaddr_to_filesystems_mapping = {}
 
-        for hostaddr, dirs in self._get_hostaddr_directories().items():
-            target_filesystems = self._get_target_filesystem(hostaddr, dirs)
+        #for hostaddr, dirs in self._get_hostaddr_directories().items():
+        target_filesystems = self._get_target_filesystem()
 
-            # if host addr is not allready present , create one
-            if hostaddr not in hostaddr_to_filesystems_mapping:
-                    hostaddr_to_filesystems_mapping[hostaddr] = []
+        #list of list
+        for tgt_fs in target_filesystems:
 
-            # Add first filesystem to list if filesystem is not present
-            tgt_host_filesystems = hostaddr_to_filesystems_mapping[hostaddr]
-            if not tgt_host_filesystems:
-                tgt_host_filesystems.extend(target_filesystems)
-                continue
+            for fs in tgt_fs:
+                # if host addr is not allready present , create one
+                if fs.hostaddr not in hostaddr_to_filesystems_mapping:
+                        hostaddr_to_filesystems_mapping[fs.hostaddr] = []
 
-            # Consolidate other pair filesystem disk space  requirement if 
-            # target filesystem is already present in host filesystem mapping
-            for tgt_fs in target_filesystems:
+                # Add first filesystem to list if filesystem is not present
+                tgt_host_filesystems = hostaddr_to_filesystems_mapping[fs.hostaddr]
+                if not tgt_host_filesystems:
+                    tgt_host_filesystems.append(fs)
+                    continue
+
+
                 for known_host_fs in tgt_host_filesystems:
-                    if tgt_fs.name == known_host_fs.name:
-                        known_host_fs.disk_required += tgt_fs.disk_required   
-                        known_host_fs.directories += set(tgt_fs.directories)
+                    if fs.name == known_host_fs.name:
+                        known_host_fs.disk_required += fs.disk_required
+                        known_host_fs.directories += set(fs.directories)
 
-            #Add the filesytem directory if it is different
-            dirs_to_add = set(target_filesystems).difference(set(tgt_host_filesystems))
-            tgt_host_filesystems.extend(dirs_to_add)
+                #Add the filesytem directory if it is different
+               # dirs_to_add = set(tgt_fs).difference(set(tgt_host_filesystems))
+                #tgt_host_filesystems.extend(dirs_to_add)
 
         return hostaddr_to_filesystems_mapping
 
 
 
     #For each source target pair fetch the target filesystem with free disk space available
-    def _get_target_filesystem(self, hostaddr, dirs):
+    def _get_target_filesystem(self):
         #List of filesystem info encapsulated in FileSystem()
-        tgt_filesystems = []
-        num_dir = len(dirs)
+        tgt_filesystems_list = []
         
-        #TODO : REquire checking of dir number ???? 
+        hostaddr_directories = self._get_hostaddr_directories()
+        num_dir = len(hostaddr_directories)
+
+        #Return if there are zero directories to query free disk space
+        if num_dir <= 0:
+            return tgt_filesystems_list
+        
         pool = WorkerPool( numWorkers=min(num_dir, self.batch_size))
         try:
-            cmd = DiskFree(hostaddr, dirs)
-            pool.addCommand(cmd)
+            for hostaddr, dirs in hostaddr_directories.items():
+                cmd = DiskFree(hostaddr, dirs)
+                pool.addCommand(cmd)
             pool.join()
         finally:
             pool.haltWork()
@@ -184,9 +203,11 @@ class RelocateDiskUsage:
 
             for fs in tgt_filesystems:
                 fs.add_disk_usage(self.src_tgt_mirror_pair_list)
+            
+            tgt_filesystems_list.append(tgt_filesystems)
+            
 
-
-        return tgt_filesystems
+        return tgt_filesystems_list
 
 
 
@@ -200,6 +221,7 @@ class FileSystem:
         self.disk_free = disk_free  
         self.disk_required = 0
         self.directories = None
+        self.hostaddr = None
 
     # Add Required disk space in target filesystem by comparing filesystem 
     # directory list with target directory 

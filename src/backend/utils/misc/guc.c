@@ -927,7 +927,7 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"ignore_invalid_pages", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+		{"ignore_invalid_pages", PGC_SUSET, DEVELOPER_OPTIONS,
 			gettext_noop("Continues recovery after an invalid pages failure."),
 			gettext_noop("Detection of WAL records having references to "
 						 "invalid pages during recovery causes PostgreSQL to "

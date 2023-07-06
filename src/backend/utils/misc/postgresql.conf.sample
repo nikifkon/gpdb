@@ -165,6 +165,8 @@ max_prepared_transactions = 250		# can be 0 or more
 #effective_io_concurrency = 1		# 1-1000; 0 disables prefetching
 #max_worker_processes = 8
 
+#ignore_invalid_pages = off
+
 
 #------------------------------------------------------------------------------
 # WRITE AHEAD LOG

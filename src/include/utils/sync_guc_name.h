@@ -81,6 +81,7 @@
 		"gp_workfile_compression",
 		"gp_workfile_limit_files_per_query",
 		"gp_workfile_limit_per_query",
+		"ignore_invalid_pages",
 		"IntervalStyle",
 		"lc_numeric",
 		"log_dispatch_stats",

@@ -564,8 +564,6 @@ btree_xlog_vacuum(XLogRecPtr lsn, XLogRecord *record)
 	 * Like in btvacuumpage(), we need to take a cleanup lock on every leaf
 	 * page. See nbtree/README for details.
 	 */
-	elog(WARNING,
-		"creating buffer in btree_xlog_vacuum");
 	buffer = XLogReadBufferExtended(xlrec->node, MAIN_FORKNUM, xlrec->block, RBM_NORMAL);
 	if (!BufferIsValid(buffer))
 		return;

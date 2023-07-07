@@ -209,9 +209,6 @@ XLogRecordPageWithFreeSpace(RelFileNode rnode, BlockNumber heapBlk,
 	addr = fsm_get_location(heapBlk, &slot);
 	blkno = fsm_logical_to_physical(addr);
 
-
-	elog(WARNING,
-		"creating buffer in XLogRecordPageWithFreeSpace");
 	/* If the page doesn't exist already, extend */
 	buf = XLogReadBufferExtended(rnode, FSM_FORKNUM, blkno, RBM_ZERO_ON_ERROR);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);

@@ -8002,8 +8002,7 @@ heap_xlog_clean(XLogRecPtr lsn, XLogRecord *record)
 		(void) RestoreBackupBlock(lsn, record, 0, true, false);
 		return;
 	}
-	elog(WARNING,
-		"creating buffer in heap_xlog_clean");
+
 	buffer = XLogReadBufferExtended(xlrec->node, MAIN_FORKNUM, xlrec->block, RBM_NORMAL);
 	if (!BufferIsValid(buffer))
 		return;
@@ -8095,8 +8094,6 @@ heap_xlog_visible(XLogRecPtr lsn, XLogRecord *record)
 		 * dropped or truncated later in recovery, we don't need to update the
 		 * page, but we'd better still update the visibility map.
 		 */
-		elog(WARNING,
-			"creating buffer in heap_xlog_visible");
 		buffer = XLogReadBufferExtended(xlrec->node, MAIN_FORKNUM,
 										xlrec->block, RBM_NORMAL);
 		if (BufferIsValid(buffer))
@@ -8256,8 +8253,6 @@ heap_xlog_newpage(XLogRecPtr lsn, XLogRecord *record)
 	 * Note: the NEWPAGE log record is used for both heaps and indexes, so do
 	 * not do anything that assumes we are touching a heap.
 	 */
-	elog(WARNING,
-		"creating buffer in heap_xlog_newpage");
 	buffer = XLogReadBufferExtended(xlrec->node, xlrec->forknum, xlrec->blkno,
 									RBM_ZERO_AND_LOCK);
 	Assert(BufferIsValid(buffer));

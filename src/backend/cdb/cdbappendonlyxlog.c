@@ -93,6 +93,9 @@ ao_insert_replay(XLogRecord *record)
 	if (xlrec->target.offset == 0)
 		fileFlags |= O_CREAT;
 	file = PathNameOpenFile(path, fileFlags, 0600);
+
+	elog(WARNING,
+		"enter ao_insert_replay");
 	if (file < 0)
 	{
 		XLogAOSegmentFile(xlrec->target.node, xlrec->target.segment_filenum);
@@ -167,6 +170,8 @@ ao_truncate_replay(XLogRecord *record)
 	dbPath = NULL;
 
 	file = PathNameOpenFile(path, O_RDWR | PG_BINARY, 0600);
+	elog(WARNING,
+		"enter ao_truncate_replay");
 	if (file < 0)
 	{
 		/*

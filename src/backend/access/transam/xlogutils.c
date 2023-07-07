@@ -96,6 +96,8 @@ log_invalid_page(RelFileNode node, ForkNumber forkno, BlockNumber blkno,
 	 * in the hash table until the end of recovery and PANIC there, which
 	 * might come only much later if this is a standby server.
 	 */
+	elog(WARNING,
+		 "enter log_invalid_page");
 	if (reachedConsistency)
 	{
 		report_invalid_page(WARNING, node, forkno, blkno, present);
@@ -277,7 +279,8 @@ Buffer
 XLogReadBuffer(RelFileNode rnode, BlockNumber blkno, bool init)
 {
 	Buffer		buf;
-
+	elog(WARNING,
+		"creating buffer in XLogReadBuffer");
 	buf = XLogReadBufferExtended(rnode, MAIN_FORKNUM, blkno,
 								 init ? RBM_ZERO_AND_LOCK : RBM_NORMAL);
 	if (BufferIsValid(buf) && !init)
@@ -340,6 +343,8 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 	else
 	{
 		/* hm, page doesn't exist in file */
+		elog(WARNING,
+			"else in XLogReadBufferExtended");
 		if (mode == RBM_NORMAL)
 		{
 			log_invalid_page(rnode, forknum, blkno, false);
@@ -384,6 +389,9 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 		 * there should be no other backends that could modify the buffer at
 		 * the same time.
 		 */
+
+		elog(WARNING,
+			"if (mode == RBM_NORMAL) in XLogReadBufferExtended");
 		if (PageIsNew(page))
 		{
 			ReleaseBuffer(buffer);
@@ -407,6 +415,8 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 void
 XLogAOSegmentFile(RelFileNode rnode, uint32 segmentFileNum)
 {
+	elog(WARNING,
+		"enter XLogAOSegmentFile");
 	log_invalid_page(rnode, MAIN_FORKNUM, segmentFileNum, false);
 }
 

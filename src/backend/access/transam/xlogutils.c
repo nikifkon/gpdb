@@ -101,6 +101,9 @@ log_invalid_page(RelFileNode node, ForkNumber forkno, BlockNumber blkno,
 		report_invalid_page(WARNING, node, forkno, blkno, present);
 		elog(ignore_invalid_pages ? WARNING : PANIC,
 			 "WAL contains references to invalid pages");
+
+		if (ignore_invalid_pages)
+			return;
 	}
 
 	/*
